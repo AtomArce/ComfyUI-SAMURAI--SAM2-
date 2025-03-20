@@ -3,7 +3,9 @@ import numpy as np
 from loguru import logger
 import gc
 import time
+import os
 
+from .samurai_node import cleanup_memory
 def setup_logging():
     """Настройка логирования"""
     logger.add("samurai_debug.log", 

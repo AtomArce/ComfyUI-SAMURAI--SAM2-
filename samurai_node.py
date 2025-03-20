@@ -9,15 +9,11 @@ import cv2
 import gc
 import tempfile
 
+from oauthlib.uri_validate import segment
 
-SAM2_PATH = os.path.join(os.path.dirname(__file__), "samurai", "sam2", "sam2")
-if SAM2_PATH not in sys.path:
-    sys.path.insert(0, SAM2_PATH)
-
-
-UTILS_PATH = os.path.join(SAM2_PATH, "utils")
-if UTILS_PATH not in sys.path:
-    sys.path.insert(0, UTILS_PATH)
+samurai_dir = os.path.dirname(os.path.abspath(__file__))
+ComfyUI_dir = os.path.dirname(os.path.dirname(samurai_dir))
+sys.path.insert(0,ComfyUI_dir)
 
 def cleanup_memory():
     """Очистка памяти CUDA"""
@@ -79,6 +75,7 @@ This node allows you to select a region of interest (box) in the first frame of 
         cv2.destroyAllWindows()
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         box = cv2.selectROI(window_name, frame, fromCenter=False, showCrosshair=True)
+        print(f"box:{box}")
         cv2.destroyAllWindows()
         
         cleanup_memory()
@@ -188,13 +185,15 @@ This node allows you to select points of interest in the first frame of a video 
 class SAMURAIRefineNode:
     @classmethod
     def get_config_path(cls, config_name):
-        return os.path.join(os.path.dirname(__file__), "samurai", "sam2", "sam2", "configs", "samurai", config_name)
+        return os.path.join(ComfyUI_dir,"custom_nodes","ComfyUI_SAM2_","sam2_configs",f"{config_name}.yaml")
 
     MODEL_CONFIGS = {
-        "sam2.1_hiera_base.pt": "sam2.1_hiera_t",
-        "sam2.1_hiera_base_plus.pt": "sam2.1_hiera_b+",
-        "sam2.1_hiera_large.pt": "sam2.1_hiera_l",
-        "sam2.1_hiera_small.pt": "sam2.1_hiera_s"
+        "sam2.1_hiera_base_plus.safetensors": "sam2.1_hiera_b+",
+        "sam2.1_hiera_base_plus-fp16.safetensors": "sam2.1_hiera_b+",
+        "sam2.1_hiera_large.safetensors": "sam2.1_hiera_l",
+        "sam2.1_hiera_large-fp16.safetensors": "sam2.1_hiera_l",
+        "sam2.1_hiera_small.safetensors": "sam2.1_hiera_s",
+        "sam2.1_hiera_small-fp16.safetensors": "sam2.1_hiera_s",
     }
 
     @classmethod
@@ -203,7 +202,7 @@ class SAMURAIRefineNode:
             "required": {
                 "image": ("IMAGE",),
                 "model_name": (list(cls.MODEL_CONFIGS.keys()), {
-                    "default": "sam2.1_hiera_base_plus.pt"
+                    "default": "sam2.1_hiera_base_plus.safetensors"
                 }),
                 "resolution": ("INT", {
                     "default": 1024,
@@ -248,10 +247,10 @@ This node performs video object segmentation using the SAMURAI model.
 - **frame_number**: Current frame number for sequence
 
 ## Models Available:
-- sam2.1_hiera_base.pt
-- sam2.1_hiera_base_plus.pt
-- sam2.1_hiera_large.pt
-- sam2.1_hiera_small.pt
+- sam2.1_hiera_base.safetensor
+- sam2.1_hiera_base_plus.safetensor
+- sam2.1_hiera_large.safetensor
+- sam2.1_hiera_small.safetensor
 
 ## Usage:
 1. Connect video and box/points inputs
@@ -272,23 +271,31 @@ This node performs video object segmentation using the SAMURAI model.
         cleanup_memory()
 
     def load_model(self, model_name):
+
         if self.predictor is None:
             print("SAMURAI mode: True")
-            from sam2.build_sam import build_sam2_video_predictor
+            from custom_nodes.ComfyUI_SAM2_.load_model import load_model
             
             config_name = self.MODEL_CONFIGS.get(model_name)
             if not config_name:
                 raise ValueError(f"Configuration not found for model {model_name}")
-            
             config_file = self.get_config_path(config_name)
-            models_path = os.path.join(os.path.dirname(__file__), 
-                                    "samurai", "sam2", "checkpoints")
+            models_path = os.path.join(ComfyUI_dir,
+                                    "models", "sam2")
             model_path = os.path.join(models_path, model_name)
-            
-            self.predictor = build_sam2_video_predictor(
-                config_file=config_file,
-                ckpt_path=model_path
+
+            dtype = torch.float32
+            if "-fp16" in model_name:
+                dtype = torch.float16
+
+            self.predictor = load_model(
+                model_path = model_path,
+                model_cfg_path= config_file,
+                segmentor = "video",
+                dtype = dtype,
+                device="cuda",
             )
+
             print(f"Loaded checkpoint {model_name} with config {config_file}")
 
     def segment(self, image, model_name, resolution=1024, iou_threshold=0.1, box=None, points=None, labels=None, start_frame=0):
@@ -300,7 +307,8 @@ This node performs video object segmentation using the SAMURAI model.
         
         if len(image.shape) != 4 or image.shape[-1] != 3:
             raise ValueError("Expected video input with shape [frames, height, width, 3]")
-        
+
+
         original_method = self.predictor.add_new_points_or_box
         
         def patched_method(*args, **kwargs):
@@ -387,8 +395,9 @@ This node performs video object segmentation using the SAMURAI model.
                     )
                     
                     if box is not None:
+
                         box_tensor = torch.tensor([[box[0], box[1], box[0] + box[2], box[1] + box[3]]], 
-                                                dtype=torch.float16, 
+                                                dtype=model_dtype,
                                                 device=self.device)
                         print(f"Box tensor device: {box_tensor.device}")
                         print(f"Box tensor shape: {box_tensor.shape}")
@@ -440,7 +449,8 @@ This node performs video object segmentation using the SAMURAI model.
                     
                     del inference_state
                     cleanup_memory()
-                    
+                    # has_nonzero = torch.any(sequence_masks != 0)
+                    # print(f"has_nonzero: {has_nonzero}")
                     return (sequence_masks,)
                     
             except Exception as e:

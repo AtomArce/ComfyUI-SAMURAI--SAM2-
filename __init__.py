@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from .utils import setup_logging, get_device_info
+from .samurai_utils import setup_logging, get_device_info
 from loguru import logger
 
 # Настройка логирования
